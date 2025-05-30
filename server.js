@@ -7,7 +7,8 @@ const PORT = process.env.PORT || 10000;
 
 // Game constants
 const GRID_SIZE = 25;
-const GAME_SPEED = 100; // ms
+const GAME_SPEED = 150; // Slower game speed for better control
+const FOOD_SCORE = 5;
 
 // Game state
 const gameState = {
@@ -31,8 +32,24 @@ const server = app.listen(PORT, () => {
 });
 
 // WebSocket setup
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ 
+  server,
+  clientTracking: true,
+  perMessageDeflate: {
+    zlibDeflateOptions: {
+      chunkSize: 1024,
+      memLevel: 7,
+      level: 3
+    },
+    zlibInflateOptions: {
+      chunkSize: 10 * 1024
+    },
+    threshold: 1024,
+    concurrencyLimit: 10
+  }
+});
 
+// Connection handling
 wss.on('connection', (ws) => {
   const playerId = generateId();
   console.log(`Player ${playerId} connected`);
@@ -43,84 +60,113 @@ wss.on('connection', (ws) => {
     name: `Player ${Object.keys(gameState.players).length + 1}`,
     snake: [getRandomPosition()],
     direction: getRandomDirection(),
-    nextDirection: null,
+    pendingDirection: null,
     score: 0,
     color: getRandomColor(),
-    alive: true
+    alive: true,
+    ws: ws // Store WebSocket reference
   };
 
   // Send initial game state
-  ws.send(JSON.stringify({
+  sendToPlayer(playerId, {
     type: 'init',
     playerId,
-    gameState: sanitizeGameState(playerId)
-  }));
+    gameState: getClientGameState(playerId)
+  });
 
-  // Broadcast new player
-  broadcastPlayerUpdate();
+  // Broadcast new player to others
+  broadcastPlayersUpdate();
 
   // Start game if not running
   if (!gameState.gameInterval) {
     startGameLoop();
   }
 
-  // Handle messages
+  // Message handling
   ws.on('message', (message) => {
-    const data = JSON.parse(message);
-    
-    if (data.type === 'directionChange' && gameState.players[playerId]) {
-      gameState.players[playerId].nextDirection = data.direction;
-    }
-    if (data.type === 'setName' && gameState.players[playerId]) {
-      gameState.players[playerId].name = data.name.substring(0, 15);
-      broadcastPlayerUpdate();
+    try {
+      const data = JSON.parse(message);
+      
+      if (data.type === 'directionChange' && gameState.players[playerId]) {
+        // Prevent 180-degree turns
+        const currentDirection = gameState.players[playerId].direction;
+        if (
+          !(currentDirection === 'up' && data.direction === 'down') &&
+          !(currentDirection === 'down' && data.direction === 'up') &&
+          !(currentDirection === 'left' && data.direction === 'right') &&
+          !(currentDirection === 'right' && data.direction === 'left')
+        ) {
+          gameState.players[playerId].pendingDirection = data.direction;
+        }
+      }
+      else if (data.type === 'setName' && gameState.players[playerId]) {
+        gameState.players[playerId].name = data.name.substring(0, 15);
+        broadcastPlayersUpdate();
+      }
+    } catch (err) {
+      console.error('Error processing message:', err);
     }
   });
 
-  // Handle disconnection
+  // Connection cleanup
   ws.on('close', () => {
     console.log(`Player ${playerId} disconnected`);
-    delete gameState.players[playerId];
-    broadcastPlayerUpdate();
-    
-    if (Object.keys(gameState.players).length === 0) {
-      stopGameLoop();
+    if (gameState.players[playerId]) {
+      delete gameState.players[playerId];
+      broadcastPlayersUpdate();
+      
+      if (Object.keys(gameState.players).length === 0) {
+        stopGameLoop();
+      }
     }
+  });
+
+  // Error handling
+  ws.on('error', (error) => {
+    console.error(`WebSocket error for player ${playerId}:`, error);
   });
 });
 
-// Game functions
+// Game loop functions
 function startGameLoop() {
-  gameState.gameInterval = setInterval(updateGame, GAME_SPEED);
+  gameState.gameInterval = setInterval(() => {
+    try {
+      updateGame();
+      broadcastGameState();
+    } catch (err) {
+      console.error('Game loop error:', err);
+    }
+  }, GAME_SPEED);
   console.log('Game started');
 }
 
 function stopGameLoop() {
-  clearInterval(gameState.gameInterval);
-  gameState.gameInterval = null;
-  console.log('Game stopped');
+  if (gameState.gameInterval) {
+    clearInterval(gameState.gameInterval);
+    gameState.gameInterval = null;
+    console.log('Game stopped');
+  }
 }
 
 function updateGame() {
-  // Update directions
+  // Update directions from pending inputs
   Object.values(gameState.players).forEach(player => {
-    if (player.nextDirection && player.alive) {
-      player.direction = player.nextDirection;
-      player.nextDirection = null;
+    if (player.pendingDirection && player.alive) {
+      player.direction = player.pendingDirection;
+      player.pendingDirection = null;
     }
   });
 
-  // Move snakes
+  // Move all players
   Object.values(gameState.players).forEach(movePlayer);
 
-  // Check collisions
+  // Check for collisions
   checkCollisions();
 
-  // Broadcast state
-  broadcast({
-    type: 'gameUpdate',
-    gameState: sanitizeGameState()
-  });
+  // Check if need to generate new food
+  if (!gameState.food || Math.random() < 0.02) {
+    gameState.food = generateFood();
+  }
 }
 
 function movePlayer(player) {
@@ -128,7 +174,7 @@ function movePlayer(player) {
 
   const head = {...player.snake[0]};
   
-  // Move head
+  // Move head based on direction
   switch (player.direction) {
     case 'up': head.y -= 1; break;
     case 'down': head.y += 1; break;
@@ -136,63 +182,117 @@ function movePlayer(player) {
     case 'right': head.x += 1; break;
   }
   
-  // Wrap around
+  // Wrap around grid edges
   head.x = (head.x + GRID_SIZE) % GRID_SIZE;
   head.y = (head.y + GRID_SIZE) % GRID_SIZE;
   
+  // Add new head
   player.snake.unshift(head);
   
-  // Check food
-  if (head.x === gameState.food.x && head.y === gameState.food.y) {
-    player.score += 10;
+  // Check if ate food
+  if (gameState.food && head.x === gameState.food.x && head.y === gameState.food.y) {
+    player.score += FOOD_SCORE;
     gameState.food = generateFood();
   } else {
+    // Remove tail if no food eaten
     player.snake.pop();
   }
 }
 
 function checkCollisions() {
   const allSegments = [];
+  
+  // Collect all snake segments
   Object.values(gameState.players).forEach(player => {
     if (player.alive) {
       player.snake.forEach((segment, i) => {
-        allSegments.push({...segment, playerId: player.id, isHead: i === 0});
+        allSegments.push({
+          x: segment.x,
+          y: segment.y,
+          playerId: player.id,
+          isHead: i === 0
+        });
       });
     }
   });
 
+  // Check each player for collisions
   Object.values(gameState.players).forEach(player => {
     if (!player.alive) return;
     
     const head = player.snake[0];
-    const collision = allSegments.find(s => 
-      s.x === head.x && s.y === head.y && 
-      (s.playerId !== player.id || s.isHead === false)
+    const collision = allSegments.find(segment => 
+      segment.x === head.x && 
+      segment.y === head.y &&
+      (segment.playerId !== player.id || !segment.isHead) // Allow overlapping with own head
     );
 
     if (collision) {
       player.alive = false;
-      player.snake.forEach(segment => {
-        allSegments.push({...segment, isDead: true});
-      });
+      // Notify the player who died
+      if (player.ws && player.ws.readyState === WebSocket.OPEN) {
+        player.ws.send(JSON.stringify({
+          type: 'gameOver',
+          score: player.score
+        }));
+      }
     }
   });
 }
 
-function broadcastPlayerUpdate() {
-  broadcast({
-    type: 'playersUpdate',
-    players: Object.values(gameState.players).map(p => ({
-      id: p.id,
-      name: p.name,
-      score: p.score,
-      color: p.color,
-      alive: p.alive
-    }))
+// Communication functions
+function broadcastGameState() {
+  const gameUpdate = {
+    type: 'gameUpdate',
+    gameState: getClientGameState()
+  };
+  
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(JSON.stringify(gameUpdate));
+      } catch (err) {
+        console.error('Error sending game update:', err);
+      }
+    }
   });
 }
 
-function sanitizeGameState(excludePlayerId) {
+function broadcastPlayersUpdate() {
+  const playersUpdate = {
+    type: 'playersUpdate',
+    players: Object.values(gameState.players).map(player => ({
+      id: player.id,
+      name: player.name,
+      score: player.score,
+      color: player.color,
+      alive: player.alive
+    }))
+  };
+  
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(JSON.stringify(playersUpdate));
+      } catch (err) {
+        console.error('Error sending players update:', err);
+      }
+    }
+  });
+}
+
+function sendToPlayer(playerId, message) {
+  const player = gameState.players[playerId];
+  if (player && player.ws && player.ws.readyState === WebSocket.OPEN) {
+    try {
+      player.ws.send(JSON.stringify(message));
+    } catch (err) {
+      console.error(`Error sending to player ${playerId}:`, err);
+    }
+  }
+}
+
+function getClientGameState(excludePlayerId) {
   return {
     food: gameState.food,
     players: Object.entries(gameState.players).reduce((acc, [id, player]) => {
@@ -206,14 +306,6 @@ function sanitizeGameState(excludePlayerId) {
       return acc;
     }, {})
   };
-}
-
-function broadcast(message) {
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(message));
-    }
-  });
 }
 
 // Helper functions
@@ -230,11 +322,23 @@ function getRandomPosition() {
 
 function generateFood() {
   let food;
+  let attempts = 0;
+  const maxAttempts = 100;
+  
   do {
     food = getRandomPosition();
-  } while (Object.values(gameState.players).some(player => 
-    player.snake.some(segment => segment.x === food.x && segment.y === food.y)
-  ));
+    attempts++;
+    
+    // Check if position is free
+    const positionOccupied = Object.values(gameState.players).some(player =>
+      player.snake.some(segment => segment.x === food.x && segment.y === food.y)
+    );
+    
+    if (!positionOccupied || attempts >= maxAttempts) {
+      break;
+    }
+  } while (true);
+  
   return food;
 }
 
