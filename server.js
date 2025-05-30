@@ -7,13 +7,13 @@ const PORT = process.env.PORT || 10000;
 
 // Game constants
 const GRID_SIZE = 25;
-const GAME_SPEED = 150; // Slower game speed for better control
+const GAME_SPEED = 60; // Faster game speed for smoother updates
 const FOOD_SCORE = 5;
 
 // Game state
 const gameState = {
   players: {},
-  food: generateFood(),
+  food: null,
   gridSize: GRID_SIZE,
   gameInterval: null
 };
@@ -354,3 +354,29 @@ function getRandomColor() {
   ];
   return colors[Math.floor(Math.random() * colors.length)];
 }
+
+// public/main.js
+// Connect to WebSocket server
+const socket = new WebSocket('wss://test1-gene.onrender.com');
+
+// Handle connection open
+socket.onopen = () => {
+  console.log('Connected to WebSocket server');
+};
+
+// Handle messages
+socket.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  // Handle incoming data
+  console.log(data);
+};
+
+// Handle errors
+socket.onerror = (error) => {
+  console.error('WebSocket error:', error);
+};
+
+// Handle close
+socket.onclose = () => {
+  console.log('WebSocket connection closed');
+};
