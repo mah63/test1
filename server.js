@@ -7,8 +7,8 @@ const PORT = process.env.PORT || 10000;
 
 // Game constants
 const GRID_SIZE = 25;
-const GAME_SPEED = 60; // Faster game speed for smoother updates
-const FOOD_SCORE = 5;
+const GAME_SPEED = 150; // Faster game speed for smoother updates
+const FOOD_SCORE = 1;
 
 // Game state
 const gameState = {
