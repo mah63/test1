@@ -201,6 +201,10 @@ function movePlayer(player) {
         score: player.score
       }));
     }
+
+    // Broadcast updated scores to all clients
+    broadcastPlayersUpdate();
+
   } else {
     // Remove tail if no food eaten
     player.snake.pop();
