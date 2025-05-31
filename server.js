@@ -354,29 +354,3 @@ function getRandomColor() {
   ];
   return colors[Math.floor(Math.random() * colors.length)];
 }
-
-// public/main.js
-// Connect to WebSocket server
-const socket = new WebSocket('wss://test1-gene.onrender.com');
-
-// Handle connection open
-socket.onopen = () => {
-  console.log('Connected to WebSocket server');
-};
-
-// Handle messages
-socket.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  // Handle incoming data
-  console.log(data);
-};
-
-// Handle errors
-socket.onerror = (error) => {
-  console.error('WebSocket error:', error);
-};
-
-// Handle close
-socket.onclose = () => {
-  console.log('WebSocket connection closed');
-};
