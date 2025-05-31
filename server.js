@@ -7,7 +7,7 @@ const PORT = process.env.PORT || 10000;
 
 // Game constants
 const GRID_SIZE = 25;
-const GAME_SPEED = 150; // Faster game speed for smoother updates
+const GAME_SPEED = 100; // Faster game speed for smoother updates
 const FOOD_SCORE = 1;
 
 // Game state
@@ -193,6 +193,14 @@ function movePlayer(player) {
   if (gameState.food && head.x === gameState.food.x && head.y === gameState.food.y) {
     player.score += FOOD_SCORE;
     gameState.food = generateFood();
+
+    // Send updated score to the player immediately
+    if (player.ws && player.ws.readyState === WebSocket.OPEN) {
+      player.ws.send(JSON.stringify({
+        type: 'scoreUpdate',
+        score: player.score
+      }));
+    }
   } else {
     // Remove tail if no food eaten
     player.snake.pop();
